@@ -1,6 +1,7 @@
 from pathlib import Path
 import html
 from dataclasses import dataclass
+from textwrap import dedent
 
 import altair as alt
 import numpy as np
@@ -390,26 +391,143 @@ def render_soft_table(df, max_rows=300):
     """
 
 
+def render_dong_rank_panel(df, selected_district, max_rows=10):
+    rank_df = (
+        df.groupby("neighborhood", as_index=False)
+        .agg(
+            avg_price=("price_10k_krw", "mean"),
+            median_pyeong=("price_per_pyeong", "median"),
+            deals=("price_10k_krw", "count"),
+        )
+        .query("deals >= 3")
+        .sort_values("avg_price", ascending=False)
+        .head(max_rows)
+    )
+    if rank_df.empty:
+        return dedent("""
+        <div class="dong-rank-card">
+          <div class="dong-rank-header"><strong>동별 평균 매매가</strong><span>거래 3건 이상</span></div>
+          <div class="analysis-note">선택한 조건에서 동별 순위를 만들 거래가 부족합니다.</div>
+        </div>
+        """).strip()
+
+    max_price = rank_df["avg_price"].max()
+    rows = []
+    for idx, row in enumerate(rank_df.itertuples(index=False), start=1):
+        width = 0 if not max_price else row.avg_price / max_price * 100
+        rows.append(
+            dedent(f"""
+            <div class="dong-rank-row">
+              <div class="dong-rank-no">{idx}</div>
+              <div class="dong-rank-name">{html.escape(str(row.neighborhood))}</div>
+              <div class="dong-rank-value">{row.avg_price:,.0f}</div>
+              <div class="dong-rank-bar"><div class="dong-rank-fill" style="width:{width:.1f}%"></div></div>
+            </div>
+            """).strip()
+        )
+    return dedent(f"""
+    <div class="dong-rank-card">
+      <div class="dong-rank-header">
+        <strong>{html.escape(selected_district)} 동별 평균 매매가</strong>
+        <span>단위: 만원 · 거래 3건 이상</span>
+      </div>
+      <div class="dong-rank-list">
+        {"".join(rows)}
+      </div>
+    </div>
+    """).strip()
+
+
+def render_prediction_result_card(
+    adjusted_price,
+    predicted_price,
+    recent_median_price,
+    recent_weight,
+    adjusted_pyeong_price,
+    area,
+    floor,
+    built_year,
+    contract_year,
+    contract_month,
+    gu,
+    dong,
+    complex_name,
+    active_model,
+):
+    model_weight = 1 - recent_weight
+    model_width = max(model_weight * 100, 2 if model_weight > 0 else 0)
+    recent_width = max(recent_weight * 100, 2 if recent_weight > 0 else 0)
+    correction_gap = adjusted_price - predicted_price
+    correction_rate = correction_gap / predicted_price * 100 if predicted_price else 0
+    correction_class = "prediction-up" if correction_gap >= 0 else "prediction-down"
+    correction_sign = "+" if correction_gap >= 0 else ""
+    recent_label = format_price_uk(recent_median_price) if recent_median_price is not None else "반영 없음"
+    complex_label = complex_name if complex_name != "전체/모름" else "단지명 미사용"
+    basis_note = (
+        f"모델 예측가 {model_weight:.0%}와 최근 1년 유사거래 중위가 {recent_weight:.0%}를 섞어 보정했습니다."
+        if recent_median_price is not None
+        else "최근 유사 거래가 5건 미만이라 모델 예측가를 그대로 사용했습니다."
+    )
+    location = f"{gu} {dong}".strip()
+
+    return dedent(f"""
+    <div class="prediction-result-card">
+      <div class="prediction-result-head">
+        <div>
+          <span>최종 보정 예상가</span>
+          <strong>{format_price_uk(adjusted_price)}</strong>
+          <p>예상 평당가 {adjusted_pyeong_price:,.0f}만원/평</p>
+        </div>
+        <div class="prediction-badge">{html.escape(active_model.name)}</div>
+      </div>
+      <div class="prediction-context">
+        <span>{html.escape(location)}</span>
+        <span>{html.escape(complex_label)}</span>
+        <span>{area:,.1f}㎡ · {area / PYEONG_DIVISOR:,.1f}평</span>
+        <span>{built_year}년식 · {floor}층</span>
+        <span>{contract_year}-{contract_month:02d} 기준</span>
+      </div>
+      <div class="prediction-mini-grid">
+        <div><span>모델 예측가</span><b>{format_price_uk(predicted_price)}</b></div>
+        <div><span>최근 유사거래 중위가</span><b>{recent_label}</b></div>
+        <div><span>모델 대비 보정폭</span><b class="{correction_class}">{correction_sign}{correction_rate:.1f}%</b></div>
+        <div><span>시간검증 오차</span><b>{active_model.mae:,.0f}만원</b><small>MAPE {active_model.mape:.1%}</small></div>
+      </div>
+      <div class="prediction-blend">
+        <div class="prediction-blend-label">
+          <span>가격 산출 비중</span>
+          <b>모델 {model_weight:.0%} · 최근거래 {recent_weight:.0%}</b>
+        </div>
+        <div class="prediction-blend-bar">
+          <div class="prediction-model-bar" style="width:{model_width:.1f}%"></div>
+          <div class="prediction-recent-bar" style="width:{recent_width:.1f}%"></div>
+        </div>
+      </div>
+      <p class="prediction-note">{basis_note}</p>
+    </div>
+    """).strip()
+
+
 def soft_chart(chart):
     return (
         chart.configure(background="transparent")
-        .configure_view(fill="#E0E5EC", strokeOpacity=0)
+        .configure_view(fill="#FFFFFF", strokeOpacity=0)
         .configure_axis(
-            labelColor="#3D4852",
-            titleColor="#3D4852",
-            gridColor="#C7D0DD",
-            domainColor="#B7C1D0",
-            tickColor="#B7C1D0",
+            labelColor="#1F2937",
+            titleColor="#1F2937",
+            gridColor="#E2E8F0",
+            domainColor="#CBD5E1",
+            tickColor="#CBD5E1",
             labelFontSize=12,
             titleFontSize=13,
         )
         .configure_legend(
-            labelColor="#3D4852",
-            titleColor="#3D4852",
+            labelColor="#1F2937",
+            titleColor="#1F2937",
             labelFontSize=12,
             titleFontSize=13,
         )
-        .configure_title(color="#3D4852", fontSize=15)
+        .configure_title(color="#1F2937", fontSize=15)
     )
 
 
@@ -425,7 +543,7 @@ def chart_district_price(df):
     )
     chart = (
         alt.Chart(summary)
-        .mark_bar(cornerRadiusTopLeft=12, cornerRadiusTopRight=12, color="#6C63FF")
+        .mark_bar(cornerRadiusTopLeft=12, cornerRadiusTopRight=12, color="#2563EB")
         .encode(
             x=alt.X("district:N", sort="-y", title="구"),
             y=alt.Y("median_pyeong:Q", title="중위 평당가(만원/평)"),
@@ -509,7 +627,7 @@ def chart_monthly_trend(df):
     )
     bars = (
         alt.Chart(monthly)
-        .mark_bar(color="#A7B0FF", opacity=0.82, cornerRadiusTopLeft=10, cornerRadiusTopRight=10)
+        .mark_bar(color="#93C5FD", opacity=0.86, cornerRadiusTopLeft=10, cornerRadiusTopRight=10)
         .encode(
             x=alt.X(
                 "month:T",
@@ -530,7 +648,7 @@ def chart_monthly_trend(df):
     )
     line = (
         alt.Chart(monthly)
-        .mark_line(color="#6C63FF", point={"filled": True, "size": 90}, strokeWidth=3)
+        .mark_line(color="#2563EB", point={"filled": True, "size": 90}, strokeWidth=3)
         .encode(
             x=alt.X("month:T"),
             y=alt.Y("median_pyeong:Q", title="중위 평당가(만원/평)"),
@@ -566,7 +684,7 @@ def chart_district_month_heatmap(df):
             color=alt.Color(
                 "median_pyeong:Q",
                 title="중위 평당가",
-                scale=alt.Scale(range=["#D7DDE7", "#A7B0FF", "#6C63FF", "#4F46E5"]),
+                scale=alt.Scale(range=["#DBEAFE", "#93C5FD", "#2563EB", "#1E40AF"]),
             ),
             tooltip=[
                 alt.Tooltip("district:N", title="구"),
@@ -620,17 +738,17 @@ def area_price_heatmap_figure(df, selected_district):
 
     fig_height = max(4.8, min(8.5, 1.0 + len(pivot) * 0.42))
     fig, ax = plt.subplots(figsize=(11.6, fig_height))
-    fig.patch.set_facecolor("#E0E5EC")
-    ax.set_facecolor("#E0E5EC")
+    fig.patch.set_facecolor("#FFFFFF")
+    ax.set_facecolor("#FFFFFF")
 
     sns.heatmap(
         pivot,
         annot=True,
         fmt=",.0f",
-        cmap="mako",
+        cmap="Blues",
         mask=pivot.isna(),
         linewidths=1.4,
-        linecolor="#E0E5EC",
+        linecolor="#E2E8F0",
         cbar_kws={"label": "중위 평당가(만원/평)", "shrink": 0.82},
         annot_kws={"fontsize": 9, "fontweight": "bold"},
         ax=ax,
@@ -639,16 +757,16 @@ def area_price_heatmap_figure(df, selected_district):
         f"{title_prefix} {index_label} × 전용면적 구간별 중위 평당가",
         fontsize=15,
         fontweight="bold",
-        color="#3D4852",
+        color="#1F2937",
         pad=16,
     )
-    ax.set_xlabel("전용면적 구간", fontsize=12, color="#3D4852", labelpad=10)
-    ax.set_ylabel(index_label, fontsize=12, color="#3D4852", labelpad=10)
-    ax.tick_params(axis="x", colors="#3D4852", labelrotation=0, labelsize=10)
-    ax.tick_params(axis="y", colors="#3D4852", labelrotation=0, labelsize=10)
+    ax.set_xlabel("전용면적 구간", fontsize=12, color="#1F2937", labelpad=10)
+    ax.set_ylabel(index_label, fontsize=12, color="#1F2937", labelpad=10)
+    ax.tick_params(axis="x", colors="#1F2937", labelrotation=0, labelsize=10)
+    ax.tick_params(axis="y", colors="#1F2937", labelrotation=0, labelsize=10)
     colorbar = ax.collections[0].colorbar
-    colorbar.ax.yaxis.label.set_color("#3D4852")
-    colorbar.ax.tick_params(colors="#3D4852")
+    colorbar.ax.yaxis.label.set_color("#1F2937")
+    colorbar.ax.tick_params(colors="#1F2937")
     fig.tight_layout()
     return fig
 
@@ -690,7 +808,7 @@ def chart_focus_monthly_price(df, selected_district):
             color=alt.Color(
                 "metric:N",
                 title=None,
-                scale=alt.Scale(range=["#6C63FF", "#FF7AA2"]),
+                scale=alt.Scale(range=["#2563EB", "#60A5FA"]),
             ),
             tooltip=[
                 alt.Tooltip("month:T", title="월", format="%Y-%m"),
@@ -739,7 +857,7 @@ def chart_neighborhood_price_compare(df, selected_district):
             color=alt.Color(
                 "kind:N",
                 title=None,
-                scale=alt.Scale(domain=["지역 평균", "동"], range=["#FF7AA2", "#6C63FF"]),
+                scale=alt.Scale(domain=["지역 평균", "동"], range=["#93C5FD", "#2563EB"]),
             ),
             tooltip=[
                 alt.Tooltip("neighborhood:N", title="지역"),
@@ -790,7 +908,7 @@ def chart_neighborhood_volume_top5(df, selected_district):
             color=alt.Color(
                 "kind:N",
                 title=None,
-                scale=alt.Scale(domain=["평균", "TOP 5"], range=["#FF7AA2", "#6C63FF"]),
+                scale=alt.Scale(domain=["평균", "TOP 5"], range=["#93C5FD", "#2563EB"]),
             ),
             tooltip=[
                 alt.Tooltip("neighborhood:N", title="동"),
@@ -830,7 +948,7 @@ def chart_neighborhood_volume_price_scatter(df, selected_district):
 
     points = (
         alt.Chart(scatter_df)
-        .mark_circle(size=110, opacity=0.86, stroke="#E0E5EC", strokeWidth=1.2)
+        .mark_circle(size=110, opacity=0.86, stroke="#FFFFFF", strokeWidth=1.2)
         .encode(
             x=alt.X("deals:Q", title="동별 거래건수"),
             y=alt.Y("median_pyeong:Q", title="중위 평당가(만원/평)", scale=alt.Scale(zero=False)),
@@ -851,7 +969,7 @@ def chart_neighborhood_volume_price_scatter(df, selected_district):
     )
     line = (
         alt.Chart(reg_df)
-        .mark_line(color="#FF4D6D", strokeWidth=3)
+        .mark_line(color="#2563EB", strokeWidth=3)
         .encode(x="deals:Q", y="fit:Q")
     )
     annotation = (
@@ -864,7 +982,7 @@ def chart_neighborhood_volume_price_scatter(df, selected_district):
                 }
             )
         )
-        .mark_text(align="left", baseline="top", dx=8, dy=8, color="#3D4852", fontSize=14, fontWeight="bold")
+        .mark_text(align="left", baseline="top", dx=8, dy=8, color="#1F2937", fontSize=14, fontWeight="bold")
         .encode(x="x:Q", y="y:Q", text="label:N")
     )
     chart = (points + line + annotation).properties(
@@ -907,7 +1025,7 @@ def chart_district_trend_correlation(df, selected_district):
             color=alt.Color(
                 "selected:N",
                 title=None,
-                scale=alt.Scale(domain=["선택 지역", "지역구"], range=["#FF7AA2", "#6C63FF"]),
+                scale=alt.Scale(domain=["선택 지역", "지역구"], range=["#93C5FD", "#2563EB"]),
             ),
             tooltip=[
                 alt.Tooltip("district:N", title="지역구"),
@@ -953,7 +1071,7 @@ def chart_selected_district_vs_daegu_scatter(df, selected_district):
 
     points = (
         alt.Chart(compare)
-        .mark_circle(size=125, opacity=0.88, color="#6C63FF", stroke="#E0E5EC", strokeWidth=1.2)
+        .mark_circle(size=125, opacity=0.88, color="#2563EB", stroke="#FFFFFF", strokeWidth=1.2)
         .encode(
             x=alt.X("overall_pyeong:Q", title="대구 전체 중위 평당가(만원/평)", scale=alt.Scale(zero=False)),
             y=alt.Y("district_pyeong:Q", title=f"{selected_district} 중위 평당가(만원/평)", scale=alt.Scale(zero=False)),
@@ -967,7 +1085,7 @@ def chart_selected_district_vs_daegu_scatter(df, selected_district):
     )
     line = (
         alt.Chart(reg_df)
-        .mark_line(color="#FF4D6D", strokeWidth=3)
+        .mark_line(color="#2563EB", strokeWidth=3)
         .encode(x="overall_pyeong:Q", y="fit:Q")
     )
     annotation = (
@@ -980,7 +1098,7 @@ def chart_selected_district_vs_daegu_scatter(df, selected_district):
                 }
             )
         )
-        .mark_text(align="left", baseline="top", dx=8, dy=8, color="#3D4852", fontSize=14, fontWeight="bold")
+        .mark_text(align="left", baseline="top", dx=8, dy=8, color="#1F2937", fontSize=14, fontWeight="bold")
         .encode(x="x:Q", y="y:Q", text="label:N")
     )
     chart = (points + line + annotation).properties(
@@ -1033,7 +1151,7 @@ def chart_district_market_influence(df, selected_district):
 
     scatter = (
         alt.Chart(plot_df)
-        .mark_circle(opacity=0.88, stroke="#E0E5EC", strokeWidth=1.4)
+        .mark_circle(opacity=0.88, stroke="#FFFFFF", strokeWidth=1.4)
         .encode(
             x=alt.X("deal_share:Q", title="거래량 비중(%)"),
             y=alt.Y(
@@ -1045,7 +1163,7 @@ def chart_district_market_influence(df, selected_district):
             color=alt.Color(
                 "selected:N",
                 title=None,
-                scale=alt.Scale(domain=["선택 지역", "지역구"], range=["#FF7AA2", "#6C63FF"]),
+                scale=alt.Scale(domain=["선택 지역", "지역구"], range=["#93C5FD", "#2563EB"]),
             ),
             tooltip=[
                 alt.Tooltip("district:N", title="지역구"),
@@ -1058,7 +1176,7 @@ def chart_district_market_influence(df, selected_district):
     )
     labels = (
         alt.Chart(plot_df)
-        .mark_text(dx=9, dy=-7, color="#3D4852", fontSize=12, fontWeight="bold")
+        .mark_text(dx=9, dy=-7, color="#1F2937", fontSize=12, fontWeight="bold")
         .encode(
             x="deal_share:Q",
             y="change_correlation:Q",
@@ -1090,17 +1208,19 @@ st.markdown(
     """
     <style>
     :root {
-        --soft-bg: #E0E5EC;
-        --soft-surface: #E0E5EC;
-        --soft-text: #3D4852;
-        --soft-muted: #6B7280;
-        --soft-accent: #6C63FF;
-        --soft-accent-dark: #5750DC;
-        --soft-light-shadow: rgba(255, 255, 255, .78);
-        --soft-dark-shadow: rgba(163, 177, 198, .72);
-        --soft-shadow-raised: 12px 12px 24px var(--soft-dark-shadow), -12px -12px 24px var(--soft-light-shadow);
-        --soft-shadow-small: 7px 7px 15px rgba(163, 177, 198, .62), -7px -7px 15px rgba(255, 255, 255, .72);
-        --soft-shadow-inset: inset 7px 7px 14px rgba(163, 177, 198, .66), inset -7px -7px 14px rgba(255, 255, 255, .75);
+        --soft-bg: #F5F9FF;
+        --soft-surface: #FFFFFF;
+        --soft-surface-blue: #F8FBFF;
+        --soft-border: #DDE8F7;
+        --soft-text: #1F2937;
+        --soft-muted: #64748B;
+        --soft-accent: #2563EB;
+        --soft-accent-dark: #1D4ED8;
+        --soft-light-shadow: rgba(255, 255, 255, .88);
+        --soft-dark-shadow: rgba(37, 99, 235, .10);
+        --soft-shadow-raised: 0 18px 38px rgba(37, 99, 235, .12);
+        --soft-shadow-small: 0 10px 24px rgba(37, 99, 235, .08);
+        --soft-shadow-inset: inset 0 0 0 1px var(--soft-border);
         --soft-radius-lg: 32px;
         --soft-radius-md: 24px;
         --soft-radius-sm: 18px;
@@ -1162,7 +1282,9 @@ st.markdown(
         padding-top: 10px;
     }
     div[data-testid="stSlider"] p {
-        display: none;
+        color: var(--soft-muted);
+        font-size: .78rem;
+        font-weight: 800;
     }
     .area-range-card {
         display: grid;
@@ -1172,6 +1294,7 @@ st.markdown(
         padding: 14px;
         border-radius: var(--soft-radius-md);
         background: var(--soft-surface);
+        border: 1px solid var(--soft-border);
         box-shadow: var(--soft-shadow-small);
     }
     .area-range-card div {
@@ -1218,7 +1341,68 @@ st.markdown(
     }
     .hero:hover {
         transform: translateY(-2px);
-        box-shadow: 16px 16px 30px rgba(163, 177, 198, .74), -16px -16px 30px rgba(255, 255, 255, .82);
+        box-shadow: 0 22px 44px rgba(37, 99, 235, .14);
+    }
+    .intro-hero {
+        min-height: min(68vh, 620px);
+        align-items: center;
+        margin: 0 0 18px;
+        padding: 76px 68px;
+    }
+    .intro-hero h1 {
+        font-size: clamp(48px, 6vw, 86px);
+        line-height: 1.12;
+    }
+    .intro-hero p {
+        margin-top: 34px;
+        font-size: clamp(22px, 2.2vw, 34px);
+        line-height: 1.85;
+    }
+    .intro-action {
+        margin-top: 42px;
+        max-width: 260px;
+    }
+    .dashboard-frame {
+        display: grid;
+        grid-template-columns: 190px minmax(0, 1fr);
+        gap: 24px;
+        align-items: start;
+    }
+    .nav-panel {
+        position: sticky;
+        top: 18px;
+        padding: 18px;
+        border-radius: var(--soft-radius-md);
+        background: var(--soft-surface);
+        box-shadow: var(--soft-shadow-small);
+    }
+    .nav-panel h2 {
+        margin: 0 0 4px;
+        color: var(--soft-text);
+        font-size: 1.02rem;
+        font-weight: 950;
+        letter-spacing: 0;
+    }
+    .nav-panel p {
+        margin: 0 0 16px;
+        color: var(--soft-muted);
+        font-size: .78rem;
+        line-height: 1.45;
+        font-weight: 750;
+    }
+    .page-kicker {
+        margin: 0 0 6px;
+        color: var(--soft-accent);
+        font-size: .82rem;
+        font-weight: 900;
+    }
+    .page-title {
+        margin: 0 0 18px;
+        color: var(--soft-text);
+        font-size: clamp(28px, 3vw, 44px);
+        line-height: 1.18;
+        font-weight: 950;
+        letter-spacing: 0;
     }
     .hero:after {
         content: "";
@@ -1228,7 +1412,7 @@ st.markdown(
         width: 270px;
         height: 270px;
         border-radius: 50%;
-        background: rgba(108, 99, 255, .11);
+        background: rgba(37, 99, 235, .08);
         box-shadow: var(--soft-shadow-inset);
     }
     .hero h1 {
@@ -1254,7 +1438,7 @@ st.markdown(
         top: 20px;
         width: 150px;
         height: 215px;
-        background: linear-gradient(135deg, #EEF2F7 0%, #D6DDE7 42%, #A7B0FF 100%);
+        background: linear-gradient(135deg, #FFFFFF 0%, #DBEAFE 46%, #93C5FD 100%);
         box-shadow: var(--soft-shadow-raised);
         transform: skewY(-7deg);
         border: 4px solid rgba(255, 255, 255, .42);
@@ -1279,7 +1463,7 @@ st.markdown(
         width: 78px;
         height: 78px;
         border-radius: 50% 50% 50% 0;
-        background: linear-gradient(135deg, #A7B0FF 0%, var(--soft-accent) 70%);
+        background: linear-gradient(135deg, #60A5FA 0%, var(--soft-accent) 72%);
         transform: rotate(-45deg);
         box-shadow: var(--soft-shadow-small);
     }
@@ -1422,9 +1606,253 @@ st.markdown(
     .insight-card .metric-up {
         display: inline;
         margin: 0;
-        color: #FF4D6D;
+        color: var(--soft-accent);
         font-weight: 900;
         white-space: nowrap;
+    }
+    .dong-rank-card {
+        background: var(--soft-surface);
+        border: 1px solid var(--soft-border);
+        border-radius: var(--soft-radius-md);
+        box-shadow: var(--soft-shadow-small);
+        padding: 20px 22px;
+        margin-bottom: 18px;
+    }
+    .dong-rank-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+    }
+    .dong-rank-header strong {
+        color: var(--soft-text);
+        font-size: 1.18rem;
+        font-weight: 950;
+    }
+    .dong-rank-header span {
+        color: var(--soft-muted);
+        font-size: .82rem;
+        font-weight: 800;
+    }
+    .dong-rank-list {
+        display: grid;
+        gap: 11px;
+    }
+    .dong-rank-row {
+        display: grid;
+        grid-template-columns: 38px minmax(74px, .8fr) 82px minmax(120px, 1fr);
+        gap: 12px;
+        align-items: center;
+    }
+    .dong-rank-no {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        display: inline-grid;
+        place-items: center;
+        background: var(--soft-accent);
+        color: #FFFFFF;
+        font-weight: 900;
+        font-size: .92rem;
+    }
+    .dong-rank-row:nth-child(n+6) .dong-rank-no {
+        background: #93C5FD;
+    }
+    .dong-rank-name {
+        color: var(--soft-text);
+        font-weight: 850;
+        white-space: nowrap;
+    }
+    .dong-rank-value {
+        color: var(--soft-text);
+        font-weight: 900;
+        text-align: right;
+        white-space: nowrap;
+    }
+    .dong-rank-bar {
+        height: 14px;
+        border-radius: 999px;
+        background: #EAF2FF;
+        overflow: hidden;
+    }
+    .dong-rank-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #60A5FA, var(--soft-accent));
+    }
+    .region-summary-card {
+        background: linear-gradient(180deg, #FFFFFF 0%, #F8FBFF 100%);
+        border: 1px solid var(--soft-border);
+        border-radius: var(--soft-radius-md);
+        box-shadow: var(--soft-shadow-small);
+        padding: 20px 22px;
+        min-height: 100%;
+    }
+    .region-summary-card strong {
+        display: block;
+        color: var(--soft-text);
+        font-size: 1.7rem;
+        font-weight: 950;
+        margin: 8px 0 14px;
+    }
+    .region-summary-card span {
+        color: var(--soft-muted);
+        font-size: .86rem;
+        font-weight: 850;
+    }
+    .region-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+    }
+    .region-summary-item {
+        border-radius: 18px;
+        background: #F8FBFF;
+        border: 1px solid var(--soft-border);
+        padding: 12px;
+    }
+    .region-summary-item b {
+        display: block;
+        color: var(--soft-accent);
+        font-size: 1.05rem;
+        margin-top: 4px;
+    }
+    .prediction-result-card {
+        background: linear-gradient(180deg, #FFFFFF 0%, #F8FBFF 100%);
+        border: 1px solid var(--soft-border);
+        border-radius: var(--soft-radius-md);
+        box-shadow: var(--soft-shadow-small);
+        padding: 24px;
+        margin-bottom: 18px;
+    }
+    .prediction-result-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+    }
+    .prediction-result-head span {
+        color: var(--soft-muted);
+        font-weight: 850;
+        font-size: .9rem;
+    }
+    .prediction-result-head strong {
+        display: block;
+        color: var(--soft-text);
+        font-size: clamp(2.25rem, 4vw, 4rem);
+        line-height: 1.05;
+        font-weight: 950;
+        margin: 8px 0 6px;
+        letter-spacing: 0;
+    }
+    .prediction-result-head p {
+        margin: 0;
+        color: var(--soft-accent);
+        font-weight: 900;
+    }
+    .prediction-badge {
+        flex: 0 0 auto;
+        padding: 9px 12px;
+        border-radius: 999px;
+        color: var(--soft-accent);
+        background: rgba(37, 99, 235, .08);
+        border: 1px solid rgba(37, 99, 235, .16);
+        font-size: .78rem;
+        font-weight: 900;
+        white-space: nowrap;
+    }
+    .prediction-context {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 18px;
+    }
+    .prediction-context span {
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: #EFF6FF;
+        color: var(--soft-text);
+        border: 1px solid var(--soft-border);
+        font-size: .82rem;
+        font-weight: 850;
+    }
+    .prediction-mini-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+    }
+    .prediction-mini-grid div {
+        min-height: 86px;
+        padding: 14px;
+        border-radius: 18px;
+        background: #F8FBFF;
+        border: 1px solid var(--soft-border);
+    }
+    .prediction-mini-grid span {
+        display: block;
+        color: var(--soft-muted);
+        font-size: .78rem;
+        font-weight: 850;
+        margin-bottom: 7px;
+    }
+    .prediction-mini-grid b {
+        display: block;
+        color: var(--soft-text);
+        font-size: 1.1rem;
+        font-weight: 950;
+    }
+    .prediction-mini-grid small {
+        display: block;
+        color: var(--soft-muted);
+        margin-top: 3px;
+        font-weight: 800;
+    }
+    .prediction-up {
+        color: #DC2626 !important;
+    }
+    .prediction-down {
+        color: var(--soft-accent) !important;
+    }
+    .prediction-blend {
+        padding: 14px;
+        border-radius: 18px;
+        background: #F8FBFF;
+        border: 1px solid var(--soft-border);
+    }
+    .prediction-blend-label {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--soft-muted);
+        font-size: .82rem;
+        font-weight: 850;
+        margin-bottom: 10px;
+    }
+    .prediction-blend-label b {
+        color: var(--soft-text);
+    }
+    .prediction-blend-bar {
+        display: flex;
+        height: 16px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: #E5EAF3;
+    }
+    .prediction-model-bar {
+        background: linear-gradient(90deg, var(--soft-accent), #60A5FA);
+    }
+    .prediction-recent-bar {
+        background: linear-gradient(90deg, #93C5FD, #BFDBFE);
+    }
+    .prediction-note {
+        margin: 14px 0 0;
+        color: var(--soft-muted);
+        line-height: 1.55;
+        font-weight: 750;
     }
     .analysis-note {
         margin: 8px 0 24px;
@@ -1439,6 +1867,7 @@ st.markdown(
     .soft-table-wrap {
         background: var(--soft-surface);
         border-radius: var(--soft-radius-md);
+        border: 1px solid var(--soft-border);
         box-shadow: var(--soft-shadow-small);
         padding: 14px;
         overflow: auto;
@@ -1459,8 +1888,8 @@ st.markdown(
         white-space: nowrap;
     }
     .soft-table tbody tr {
-        background: var(--soft-surface);
-        box-shadow: var(--soft-shadow-inset);
+        background: #F8FBFF;
+        box-shadow: inset 0 -1px 0 var(--soft-border);
     }
     .soft-table tbody td {
         padding: 11px 12px;
@@ -1515,6 +1944,62 @@ st.markdown(
         box-shadow: var(--soft-shadow-inset);
         color: var(--soft-text);
     }
+    div[data-baseweb="popover"],
+    div[data-baseweb="popover"] *,
+    div[data-baseweb="menu"],
+    div[data-baseweb="menu"] * {
+        background: var(--soft-surface) !important;
+        color: var(--soft-text) !important;
+        border-color: transparent !important;
+    }
+    div[data-baseweb="popover"],
+    div[data-baseweb="popover"] > div,
+    div[data-baseweb="menu"] {
+        border: 0 !important;
+        border-radius: var(--soft-radius-sm) !important;
+        box-shadow: 0 16px 34px rgba(37, 99, 235, .14) !important;
+        overflow: hidden !important;
+    }
+    ul[role="listbox"],
+    div[role="listbox"],
+    ul[role="listbox"] *,
+    div[role="listbox"] * {
+        background: var(--soft-surface) !important;
+        color: var(--soft-text) !important;
+    }
+    ul[role="listbox"],
+    div[role="listbox"] {
+        border-radius: var(--soft-radius-sm) !important;
+        padding: 8px !important;
+    }
+    li[role="option"],
+    div[role="option"],
+    li[role="option"] *,
+    div[role="option"] * {
+        background: transparent !important;
+        color: var(--soft-text) !important;
+    }
+    li[role="option"],
+    div[role="option"] {
+        border-radius: 14px !important;
+        margin: 3px 0 !important;
+        font-weight: 750 !important;
+    }
+    li[role="option"]:hover,
+    div[role="option"]:hover,
+    li[aria-selected="true"],
+    div[aria-selected="true"],
+    li[role="option"]:hover *,
+    div[role="option"]:hover *,
+    li[aria-selected="true"] *,
+    div[aria-selected="true"] *,
+    li[aria-highlighted="true"],
+    div[aria-highlighted="true"],
+    li[data-highlighted="true"],
+    div[data-highlighted="true"] {
+        background: rgba(37, 99, 235, .10) !important;
+        color: var(--soft-accent) !important;
+    }
     div[data-testid="stExpander"] {
         background: var(--soft-surface);
         border: 0;
@@ -1540,7 +2025,7 @@ st.markdown(
         color: var(--soft-accent) !important;
     }
     div[data-baseweb="tag"] {
-        background: rgba(108, 99, 255, .12) !important;
+        background: rgba(37, 99, 235, .10) !important;
         color: var(--soft-accent) !important;
         border-radius: 14px !important;
     }
@@ -1572,9 +2057,12 @@ st.markdown(
     }
     @media (max-width: 820px) {
         .hero { grid-template-columns: 1fr; padding: 34px 28px; }
+        .intro-hero { min-height: auto; padding: 46px 30px; }
         .hero h1 { font-size: 34px; }
         .hero p { font-size: 17px; }
         .hero-visual { display: none; }
+        .dashboard-frame { grid-template-columns: 1fr; }
+        .nav-panel { position: static; }
         .insight-grid { grid-template-columns: 1fr; }
         .district-values { grid-template-columns: 1fr; }
     }
@@ -1583,7 +2071,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-df = load_apartment_data(DATA_CACHE_VERSION)
+data_session_key = f"apartment_data_v{DATA_CACHE_VERSION}"
+if data_session_key not in st.session_state:
+    st.session_state[data_session_key] = load_apartment_data(DATA_CACHE_VERSION)
+df = st.session_state[data_session_key]
 
 if df.empty:
     st.error("데이터를 불러오지 못했습니다. 기본 실거래가 엑셀 파일 경로를 확인하세요.")
@@ -1591,244 +2082,315 @@ if df.empty:
 
 districts = sorted(df["district"].dropna().unique().tolist())
 
-st.markdown(
-    """
-    <section class="hero">
-      <div>
-        <h1>대구 아파트<br>매매 실거래가 분석</h1>
-        <p>최근 실거래 데이터를 바탕으로<br>지역구별 시세와 월별 흐름을 한눈에 확인하세요.</p>
-      </div>
-      <div class="hero-visual">
-        <div class="building"></div>
-        <div class="pin"></div>
-      </div>
-    </section>
-    """,
-    unsafe_allow_html=True,
-)
+if "app_started" not in st.session_state:
+    st.session_state.app_started = False
+if "active_page" not in st.session_state:
+    st.session_state.active_page = "대구 전체 분석"
+if st.session_state.active_page == "전체 시장 요약":
+    st.session_state.active_page = "대구 전체 분석"
 
-max_area_m2 = float(max(250, df["area_m2"].max()))
-st.markdown(
-    """
-    <div class="market-filter-title">전용면적 범위</div>
-    <div class="market-filter-help">대시보드 전체 분석에 적용할 전용면적 조건을 선택하세요.</div>
-    """,
-    unsafe_allow_html=True,
-)
-filter_left, filter_right = st.columns([0.68, 0.32])
-with filter_left:
-    area_min_m2, area_max_m2 = st.slider(
-        "전용면적 범위",
-        min_value=0,
-        max_value=int(np.ceil(max_area_m2)),
-        value=(0, int(np.ceil(max_area_m2))),
-        step=1,
-        label_visibility="collapsed",
-    )
-with filter_right:
+if not st.session_state.app_started:
     st.markdown(
-        f"""
-        <div class="area-range-card">
-          <div><strong>{area_min_m2:.0f}㎡</strong><span>{area_min_m2 / 3.3058:.1f}평</span></div>
-          <b>~</b>
-          <div><strong>{area_max_m2:.0f}㎡</strong><span>{area_max_m2 / 3.3058:.1f}평</span></div>
+        """
+        <section class="hero intro-hero">
+          <div>
+            <h1>대구 아파트<br>매매 실거래가 분석</h1>
+            <p>최근 실거래 데이터를 바탕으로<br>지역구별 시세와 월별 흐름을 한눈에 확인하세요.</p>
+          </div>
+          <div class="hero-visual">
+            <div class="building"></div>
+            <div class="pin"></div>
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    start_col, _ = st.columns([0.18, 0.82])
+    with start_col:
+        if st.button("시작하기", type="primary", use_container_width=True):
+            st.session_state.app_started = True
+            st.session_state.active_page = "대구 전체 분석"
+            st.rerun()
+    st.stop()
+
+nav_col, content_col = st.columns([0.18, 0.82], gap="large")
+with nav_col:
+    st.markdown(
+        """
+        <div class="nav-panel">
+          <h2>분석 메뉴</h2>
+          <p>보고 싶은 화면을 선택하세요.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-area_filtered = df[
-    df["area_m2"].between(area_min_m2, area_max_m2, inclusive="both")
-].copy()
-filtered = area_filtered.copy()
-
-if filtered.empty:
-    st.warning("선택한 전용면적 조건에 해당하는 실거래 데이터가 없습니다. 필터를 다시 선택해 주세요.")
-    st.stop()
-
-st.caption("대상: 대구광역시 아파트 매매 실거래가 · 기준: 계약일 · 단위: 거래금액 만원")
-st.markdown(
-    f"**현재 분석 지역:** `대구 전체` · **전용면적 조건:** `{area_min_m2:.0f}㎡ ~ {area_max_m2:.0f}㎡`"
-)
-
-market_summary = district_summary_cards(area_filtered)
-price_leader = market_summary.iloc[0] if not market_summary.empty else None
-price_runner_up = market_summary.iloc[1] if len(market_summary) > 1 else None
-overall_median_pyeong = area_filtered["price_per_pyeong"].median()
-price_gap_vs_overall = (
-    (price_leader["median_pyeong"] - overall_median_pyeong) / overall_median_pyeong * 100
-    if price_leader is not None and overall_median_pyeong
-    else 0
-)
-price_gap_vs_second = (
-    (price_leader["median_pyeong"] - price_runner_up["median_pyeong"]) / price_runner_up["median_pyeong"] * 100
-    if price_leader is not None and price_runner_up is not None and price_runner_up["median_pyeong"]
-    else 0
-)
-price_leader_neighborhoods = (
-    area_filtered[area_filtered["district"] == price_leader["district"]]
-    .groupby("neighborhood", as_index=False)
-    .agg(
-        median_pyeong=("price_per_pyeong", "median"),
-        deals=("price_10k_krw", "count"),
+    active_page = st.radio(
+        "페이지 선택",
+        ["대구 전체 분석", "지역구 분석", "매매가 예측"],
+        index=["대구 전체 분석", "지역구 분석", "매매가 예측"].index(st.session_state.active_page),
+        key="active_page",
+        label_visibility="collapsed",
     )
-    .query("deals >= 10")
-    .sort_values("median_pyeong", ascending=False)
-    if price_leader is not None
-    else pd.DataFrame()
-)
-price_leader_neighborhood = (
-    price_leader_neighborhoods.iloc[0]["neighborhood"]
-    if not price_leader_neighborhoods.empty
-    else ""
-)
-price_leader_label = (
-    f"{price_leader['district']} {price_leader_neighborhood}"
-    if price_leader is not None and price_leader_neighborhood
-    else (price_leader["district"] if price_leader is not None else "-")
-)
-volume_by_district = (
-    area_filtered.groupby("district", as_index=False)
-    .agg(deals=("price_10k_krw", "count"))
-    .sort_values("deals", ascending=False)
-)
-volume_leader = volume_by_district.iloc[0] if not volume_by_district.empty else None
-volume_runner_up = volume_by_district.iloc[1] if len(volume_by_district) > 1 else None
-total_deals = len(area_filtered)
-volume_share = volume_leader["deals"] / total_deals * 100 if volume_leader is not None and total_deals else 0
-volume_gap_vs_second = (
-    (volume_leader["deals"] - volume_runner_up["deals"]) / volume_runner_up["deals"] * 100
-    if volume_leader is not None and volume_runner_up is not None and volume_runner_up["deals"]
-    else 0
-)
-monthly_market = (
-    area_filtered.groupby("month", as_index=False)
-    .agg(median_pyeong=("price_per_pyeong", "median"), deals=("price_10k_krw", "count"))
-    .sort_values("month")
-)
-if len(monthly_market) >= 2:
-    recent_change = (
-        (monthly_market.iloc[-1]["median_pyeong"] - monthly_market.iloc[-2]["median_pyeong"])
-        / monthly_market.iloc[-2]["median_pyeong"]
-        * 100
-    )
-    recent_month = monthly_market.iloc[-1]["month"].strftime("%Y-%m")
-else:
-    recent_change = 0
-    recent_month = "-"
+    if st.button("처음 화면", use_container_width=True):
+        st.session_state.app_started = False
+        st.rerun()
 
-metric_cols = st.columns(5)
-metric_cols[0].metric("거래 건수", f"{len(filtered):,}건")
-metric_cols[1].metric("중위 거래가", format_price_uk(filtered["price_10k_krw"].median()))
-metric_cols[2].metric("중위 평당가", f"{filtered['price_per_pyeong'].median():,.0f}만원/평")
-metric_cols[3].metric("평균 전용면적", f"{filtered['area_m2'].mean():.1f}㎡")
-metric_cols[4].metric("거래량 최다 지역구", volume_leader["district"] if volume_leader is not None else "-")
-
-st.markdown(
-    f"""
-    <div class="insight-grid">
-      <div class="insight-card">
-        <span>평당가 상위</span>
-        <strong>{price_leader_label}</strong>
-        <div class="insight-metrics">
-          <div class="insight-metric">대구 전체 대비 <span class="metric-up">{price_gap_vs_overall:+.1f}% ↑</span></div>
-          <div class="insight-metric">2위 지역 대비 <span class="metric-up">{price_gap_vs_second:+.1f}% ↑</span></div>
-        </div>
-      </div>
-      <div class="insight-card">
-        <span>거래 집중</span>
-        <strong>{volume_leader['district'] if volume_leader is not None else '-'} 거래량 최다</strong>
-        <div class="insight-metrics">
-          <div class="insight-metric">전체 거래 비중 <span class="metric-up">{volume_share:.1f}%</span></div>
-          <div class="insight-metric">2위 지역 대비 거래량 <span class="metric-up">{volume_gap_vs_second:+.1f}% ↑</span></div>
-        </div>
-      </div>
-      <div class="insight-card">
-        <span>최근 흐름</span>
-        <strong>{recent_month} 전월 대비 {recent_change:+.1f}%</strong>
-        <p>월별 중위 평당가 기준으로 최근 시장 흐름이 상승인지 하락인지 빠르게 확인합니다.</p>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-tab_market, tab_region, tab_influence, tab_predict, tab_table = st.tabs(
-    ["시장 요약", "지역구 분석", "영향 분석", "매매가 예측", "데이터"]
-)
-
-with tab_market:
-    st.markdown('<div class="analysis-note">대구 전체 시장을 먼저 보고, 지역구별 시세 수준과 거래량이 어디에 집중되는지 비교하는 화면입니다.</div>', unsafe_allow_html=True)
-    left, right = st.columns([1.15, 0.85])
-    with left:
-        st.markdown('<div class="section-title">대구 전체 월별 시세 흐름</div>', unsafe_allow_html=True)
-        st.altair_chart(chart_focus_monthly_price(area_filtered, "전체"), width="stretch")
-    with right:
-        st.markdown('<div class="section-title">월별 거래량과 중위 평당가</div>', unsafe_allow_html=True)
-        st.altair_chart(chart_monthly_trend(area_filtered), width="stretch")
-
-    left, right = st.columns(2)
-    with left:
-        st.markdown('<div class="section-title">지역구별 중위 평당가</div>', unsafe_allow_html=True)
-        st.altair_chart(chart_district_price(area_filtered), width="stretch")
-    with right:
-        st.markdown('<div class="section-title">지역구별 거래량</div>', unsafe_allow_html=True)
-        st.altair_chart(chart_district_volume(area_filtered), width="stretch")
-
-    st.markdown('<div class="section-title">전용면적 구간별 시세</div>', unsafe_allow_html=True)
-    st.altair_chart(chart_area_group_price(area_filtered), width="stretch")
-
-with tab_region:
-    selector_left, selector_right = st.columns([0.34, 0.66])
-    with selector_left:
-        selected_region = st.selectbox(
-            "지역구 선택",
-            districts,
-            index=districts.index("수성구") if "수성구" in districts else 0,
+with content_col:
+    if active_page != "매매가 예측":
+        max_area_m2 = float(max(250, df["area_m2"].max()))
+        st.markdown(
+            """
+            <div class="market-filter-title">전용면적 범위</div>
+            <div class="market-filter-help">시장 요약과 지역구 분석에 적용할 전용면적 조건을 선택하세요.</div>
+            """,
+            unsafe_allow_html=True,
         )
-    region_filtered = area_filtered[area_filtered["district"] == selected_region].copy()
+        filter_left, filter_right = st.columns([0.68, 0.32])
+        with filter_left:
+            area_min_m2, area_max_m2 = st.slider(
+                "전용면적 범위",
+                min_value=0,
+                max_value=int(np.ceil(max_area_m2)),
+                value=(0, int(np.ceil(max_area_m2))),
+                step=1,
+                format="%d㎡",
+                label_visibility="collapsed",
+            )
+        with filter_right:
+            st.markdown(
+                f"""
+                <div class="area-range-card">
+                  <div><strong>{area_min_m2:.0f}㎡</strong><span>{area_min_m2 / 3.3058:.1f}평</span></div>
+                  <b>~</b>
+                  <div><strong>{area_max_m2:.0f}㎡</strong><span>{area_max_m2 / 3.3058:.1f}평</span></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    if region_filtered.empty:
-        st.warning("선택한 지역구와 전용면적 조건에 해당하는 거래 데이터가 없습니다.")
-    else:
-        st.markdown(f'<div class="analysis-note">{selected_region} 내부에서 동별 시세, 거래량, 면적 구간 차이를 확인하는 화면입니다.</div>', unsafe_allow_html=True)
-        st.markdown('<div class="section-title">선택 지역 월별 시세 흐름</div>', unsafe_allow_html=True)
-        st.altair_chart(chart_focus_monthly_price(region_filtered, selected_region), width="stretch")
+        area_filtered = df[
+            df["area_m2"].between(area_min_m2, area_max_m2, inclusive="both")
+        ].copy()
+        filtered = area_filtered.copy()
 
-        left, right = st.columns([1.1, 0.9])
+        if filtered.empty:
+            st.warning("선택한 전용면적 조건에 해당하는 실거래 데이터가 없습니다. 필터를 다시 선택해 주세요.")
+            st.stop()
+
+        st.caption("대상: 대구광역시 아파트 매매 실거래가 · 기준: 계약일 · 단위: 거래금액 만원")
+        st.markdown(
+            f"**현재 분석 지역:** `대구 전체` · **전용면적 조건:** `{area_min_m2:.0f}㎡ ~ {area_max_m2:.0f}㎡`"
+        )
+
+    if active_page == "대구 전체 분석":
+        st.markdown('<div class="page-kicker">Market Summary</div>', unsafe_allow_html=True)
+        st.markdown('<h1 class="page-title">대구 전체 분석</h1>', unsafe_allow_html=True)
+
+        market_summary = district_summary_cards(area_filtered)
+        price_leader = market_summary.iloc[0] if not market_summary.empty else None
+        price_runner_up = market_summary.iloc[1] if len(market_summary) > 1 else None
+        overall_median_pyeong = area_filtered["price_per_pyeong"].median()
+        price_gap_vs_overall = (
+            (price_leader["median_pyeong"] - overall_median_pyeong) / overall_median_pyeong * 100
+            if price_leader is not None and overall_median_pyeong
+            else 0
+        )
+        price_gap_vs_second = (
+            (price_leader["median_pyeong"] - price_runner_up["median_pyeong"]) / price_runner_up["median_pyeong"] * 100
+            if price_leader is not None and price_runner_up is not None and price_runner_up["median_pyeong"]
+            else 0
+        )
+        price_leader_neighborhoods = (
+            area_filtered[area_filtered["district"] == price_leader["district"]]
+            .groupby("neighborhood", as_index=False)
+            .agg(
+                median_pyeong=("price_per_pyeong", "median"),
+                deals=("price_10k_krw", "count"),
+            )
+            .query("deals >= 10")
+            .sort_values("median_pyeong", ascending=False)
+            if price_leader is not None
+            else pd.DataFrame()
+        )
+        price_leader_neighborhood = (
+            price_leader_neighborhoods.iloc[0]["neighborhood"]
+            if not price_leader_neighborhoods.empty
+            else ""
+        )
+        price_leader_label = (
+            f"{price_leader['district']} {price_leader_neighborhood}"
+            if price_leader is not None and price_leader_neighborhood
+            else (price_leader["district"] if price_leader is not None else "-")
+        )
+        volume_by_district = (
+            area_filtered.groupby("district", as_index=False)
+            .agg(deals=("price_10k_krw", "count"))
+            .sort_values("deals", ascending=False)
+        )
+        volume_leader = volume_by_district.iloc[0] if not volume_by_district.empty else None
+        volume_runner_up = volume_by_district.iloc[1] if len(volume_by_district) > 1 else None
+        total_deals = len(area_filtered)
+        volume_share = volume_leader["deals"] / total_deals * 100 if volume_leader is not None and total_deals else 0
+        volume_gap_vs_second = (
+            (volume_leader["deals"] - volume_runner_up["deals"]) / volume_runner_up["deals"] * 100
+            if volume_leader is not None and volume_runner_up is not None and volume_runner_up["deals"]
+            else 0
+        )
+        monthly_market = (
+            area_filtered.groupby("month", as_index=False)
+            .agg(median_pyeong=("price_per_pyeong", "median"), deals=("price_10k_krw", "count"))
+            .sort_values("month")
+        )
+        if len(monthly_market) >= 2:
+            recent_change = (
+                (monthly_market.iloc[-1]["median_pyeong"] - monthly_market.iloc[-2]["median_pyeong"])
+                / monthly_market.iloc[-2]["median_pyeong"]
+                * 100
+            )
+            recent_month = monthly_market.iloc[-1]["month"].strftime("%Y-%m")
+        else:
+            recent_change = 0
+            recent_month = "-"
+
+        metric_cols = st.columns(5)
+        metric_cols[0].metric("거래 건수", f"{len(filtered):,}건")
+        metric_cols[1].metric("중위 거래가", format_price_uk(filtered["price_10k_krw"].median()))
+        metric_cols[2].metric("중위 평당가", f"{filtered['price_per_pyeong'].median():,.0f}만원/평")
+        metric_cols[3].metric("평균 전용면적", f"{filtered['area_m2'].mean():.1f}㎡")
+        metric_cols[4].metric("거래량 최다 지역구", volume_leader["district"] if volume_leader is not None else "-")
+
+        st.markdown(
+            f"""
+            <div class="insight-grid">
+              <div class="insight-card">
+                <span>평당가 상위</span>
+                <strong>{price_leader_label}</strong>
+                <div class="insight-metrics">
+                  <div class="insight-metric">대구 전체 대비 <span class="metric-up">{price_gap_vs_overall:+.1f}% ↑</span></div>
+                  <div class="insight-metric">2위 지역 대비 <span class="metric-up">{price_gap_vs_second:+.1f}% ↑</span></div>
+                </div>
+              </div>
+              <div class="insight-card">
+                <span>거래 집중</span>
+                <strong>{volume_leader['district'] if volume_leader is not None else '-'} 거래량 최다</strong>
+                <div class="insight-metrics">
+                  <div class="insight-metric">전체 거래 비중 <span class="metric-up">{volume_share:.1f}%</span></div>
+                  <div class="insight-metric">2위 지역 대비 거래량 <span class="metric-up">{volume_gap_vs_second:+.1f}% ↑</span></div>
+                </div>
+              </div>
+              <div class="insight-card">
+                <span>최근 흐름</span>
+                <strong>{recent_month} 전월 대비 {recent_change:+.1f}%</strong>
+                <p>월별 중위 평당가 기준으로 최근 시장 흐름이 상승인지 하락인지 빠르게 확인합니다.</p>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown('<div class="analysis-note">대구 전체 시장을 먼저 보고, 지역구별 시세 수준과 거래량이 어디에 집중되는지 비교하는 화면입니다.</div>', unsafe_allow_html=True)
+        left, right = st.columns([1.15, 0.85])
         with left:
-            st.markdown('<div class="section-title">동별 면적당 가격 비교</div>', unsafe_allow_html=True)
-            st.altair_chart(chart_neighborhood_price_compare(region_filtered, selected_region), width="stretch")
+            st.markdown('<div class="section-title">대구 전체 월별 시세 흐름</div>', unsafe_allow_html=True)
+            st.altair_chart(chart_focus_monthly_price(area_filtered, "전체"), width="stretch")
         with right:
-            st.markdown('<div class="section-title">거래량 TOP 5 동과 평균 비교</div>', unsafe_allow_html=True)
-            st.altair_chart(chart_neighborhood_volume_top5(region_filtered, selected_region), width="stretch")
+            st.markdown('<div class="section-title">월별 거래량과 중위 평당가</div>', unsafe_allow_html=True)
+            st.altair_chart(chart_monthly_trend(area_filtered), width="stretch")
 
-        st.markdown('<div class="section-title">동 × 전용면적 구간별 중위 평당가 히트맵</div>', unsafe_allow_html=True)
-        st.pyplot(area_price_heatmap_figure(region_filtered, selected_region), width="stretch")
+        left, right = st.columns(2)
+        with left:
+            st.markdown('<div class="section-title">지역구별 중위 평당가</div>', unsafe_allow_html=True)
+            st.altair_chart(chart_district_price(area_filtered), width="stretch")
+        with right:
+            st.markdown('<div class="section-title">지역구별 거래량</div>', unsafe_allow_html=True)
+            st.altair_chart(chart_district_volume(area_filtered), width="stretch")
 
-with tab_influence:
-    st.markdown('<div class="analysis-note">x축은 거래량 비중, y축은 대구 전체 월별 시세변화와의 유사도입니다. 오른쪽 위에 가까울수록 거래가 많고 전체 흐름과 비슷하게 움직이는 지역구입니다.</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">지역구별 거래량 비중과 대구 전체 시세변화 유사도</div>', unsafe_allow_html=True)
-    st.altair_chart(chart_district_market_influence(area_filtered, "전체"), width="stretch")
+        st.markdown('<div class="section-title">전용면적 구간별 시세</div>', unsafe_allow_html=True)
+        st.altair_chart(chart_area_group_price(area_filtered), width="stretch")
 
-    st.markdown('<div class="section-title">지역구별 시세·거래 요약</div>', unsafe_allow_html=True)
-    influence_table = district_summary_cards(area_filtered).rename(
-        columns={
-            "district": "지역구",
-            "median_pyeong": "중위 평당가(만원/평)",
-            "median_price": "중위 거래가(만원)",
-            "deals": "거래건수",
-        }
-    )
-    st.markdown(render_soft_table(influence_table, max_rows=20), unsafe_allow_html=True)
+        st.markdown('<div class="section-title">지역구별 거래량 비중과 대구 전체 시세변화 유사도</div>', unsafe_allow_html=True)
+        st.markdown('<div class="analysis-note">x축은 거래량 비중, y축은 대구 전체 월별 시세변화와의 유사도입니다. 오른쪽 위에 가까울수록 거래가 많고 전체 흐름과 비슷하게 움직이는 지역구입니다.</div>', unsafe_allow_html=True)
+        st.altair_chart(chart_district_market_influence(area_filtered, "전체"), width="stretch")
 
-with tab_predict:
+    elif active_page == "지역구 분석":
+        st.markdown('<div class="page-kicker">District Detail</div>', unsafe_allow_html=True)
+        st.markdown('<h1 class="page-title">지역구 분석</h1>', unsafe_allow_html=True)
+        selector_left, selector_right = st.columns([0.28, 0.72])
+        with selector_left:
+            selected_region = st.selectbox(
+                "지역구 선택",
+                districts,
+                index=districts.index("수성구") if "수성구" in districts else 0,
+            )
+        region_filtered = area_filtered[area_filtered["district"] == selected_region].copy()
+
+        if region_filtered.empty:
+            st.warning("선택한 지역구와 전용면적 조건에 해당하는 거래 데이터가 없습니다.")
+        else:
+            top_dong = (
+                region_filtered.groupby("neighborhood", as_index=False)
+                .agg(median_pyeong=("price_per_pyeong", "median"), deals=("price_10k_krw", "count"))
+                .query("deals >= 3")
+                .sort_values("median_pyeong", ascending=False)
+            )
+            top_dong_name = top_dong.iloc[0]["neighborhood"] if not top_dong.empty else "-"
+            top_dong_price = top_dong.iloc[0]["median_pyeong"] if not top_dong.empty else 0
+
+            with selector_left:
+                st.markdown(
+                    f"""
+                    <div class="region-summary-card">
+                      <span>선택 지역구</span>
+                      <strong>{selected_region}</strong>
+                      <div class="region-summary-grid">
+                        <div class="region-summary-item"><span>거래 건수</span><b>{len(region_filtered):,}건</b></div>
+                        <div class="region-summary-item"><span>중위 거래가</span><b>{format_price_uk(region_filtered["price_10k_krw"].median())}</b></div>
+                        <div class="region-summary-item"><span>중위 평당가</span><b>{region_filtered["price_per_pyeong"].median():,.0f}</b></div>
+                        <div class="region-summary-item"><span>상위 동</span><b>{top_dong_name}</b></div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with selector_right:
+                st.markdown(render_dong_rank_panel(region_filtered, selected_region), unsafe_allow_html=True)
+
+            st.markdown(f'<div class="analysis-note">{selected_region}를 선택하면 동별 평균 매매가 순위와 월별 시세 흐름, 동별 면적당 가격, 거래량, 면적 구간 히트맵을 한 화면에서 이어서 확인합니다.</div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="section-title">월별 시세변동 추이</div>', unsafe_allow_html=True)
+            st.altair_chart(chart_focus_monthly_price(region_filtered, selected_region), width="stretch")
+
+            left, right = st.columns([1.1, 0.9])
+            with left:
+                st.markdown('<div class="section-title">동별 면적당 가격 비교</div>', unsafe_allow_html=True)
+                st.altair_chart(chart_neighborhood_price_compare(region_filtered, selected_region), width="stretch")
+            with right:
+                st.markdown('<div class="section-title">거래량 TOP 5 동과 평균 비교</div>', unsafe_allow_html=True)
+                st.altair_chart(chart_neighborhood_volume_top5(region_filtered, selected_region), width="stretch")
+
+            st.markdown('<div class="section-title">동 × 전용면적 구간별 중위 평당가 히트맵</div>', unsafe_allow_html=True)
+            st.pyplot(area_price_heatmap_figure(region_filtered, selected_region), width="stretch")
+
+    else:
+        st.markdown('<div class="page-kicker">Price Prediction</div>', unsafe_allow_html=True)
+        st.markdown('<h1 class="page-title">매매가 예측</h1>', unsafe_allow_html=True)
+
+    if active_page != "매매가 예측":
+        st.stop()
+
     st.markdown(
         '<div class="analysis-note">2023~2026년 실거래 데이터를 기반으로 가상의 아파트 매매가를 추정합니다. 단지명을 선택하면 단지명 사용 모델을, 전체/모름을 선택하면 단지명 미사용 모델을 사용합니다.</div>',
         unsafe_allow_html=True,
     )
-    prediction_df = prediction_dataset(df)
-    bundle = train_price_models(prediction_df, MODEL_CACHE_VERSION)
+    prediction_data_key = f"prediction_data_v{DATA_CACHE_VERSION}"
+    if prediction_data_key not in st.session_state:
+        st.session_state[prediction_data_key] = prediction_dataset(df)
+    prediction_df = st.session_state[prediction_data_key]
+
+    model_bundle_key = f"price_model_bundle_v{DATA_CACHE_VERSION}_{MODEL_CACHE_VERSION}"
+    if model_bundle_key not in st.session_state:
+        st.session_state[model_bundle_key] = train_price_models(prediction_df, MODEL_CACHE_VERSION)
+    bundle = st.session_state[model_bundle_key]
 
     input_left, input_right = st.columns([0.58, 0.42])
     with input_left:
@@ -1849,7 +2411,15 @@ with tab_predict:
 
         area_min = float(max(10, np.floor(prediction_df["전용면적(㎡)"].quantile(0.01))))
         area_max = float(np.ceil(prediction_df["전용면적(㎡)"].quantile(0.99)))
-        area = st.slider("전용면적(㎡)", area_min, area_max, min(84.0, area_max), 0.1, key="predict_area")
+        area = st.number_input(
+            "전용면적(㎡)",
+            min_value=area_min,
+            max_value=area_max,
+            value=min(84.0, area_max),
+            step=0.1,
+            format="%.1f",
+            key="predict_area",
+        )
         st.markdown(
             f'<div class="filter-summary">전용면적 {area:,.1f}㎡ · {area / PYEONG_DIVISOR:,.1f}평</div>',
             unsafe_allow_html=True,
@@ -1869,11 +2439,25 @@ with tab_predict:
 
         built_min = int(prediction_df["건축년도"].min())
         built_max = max(int(prediction_df["건축년도"].max()), int(contract_year))
-        built_year = st.slider("건축년도", built_min, built_max, min(2015, built_max), key="predict_built")
+        built_year = st.number_input(
+            "건축년도",
+            min_value=built_min,
+            max_value=built_max,
+            value=min(2015, built_max),
+            step=1,
+            key="predict_built",
+        )
 
         floor_min = int(prediction_df["층"].dropna().quantile(0.01))
         floor_max = int(prediction_df["층"].dropna().quantile(0.99))
-        floor = st.slider("층", floor_min, floor_max, min(10, floor_max), key="predict_floor")
+        floor = st.number_input(
+            "층",
+            min_value=floor_min,
+            max_value=floor_max,
+            value=min(10, floor_max),
+            step=1,
+            key="predict_floor",
+        )
 
     prediction_input = build_prediction_row(
         sigungu=sigungu,
@@ -1899,21 +2483,25 @@ with tab_predict:
 
     with input_right:
         st.markdown('<div class="section-title">예측 결과</div>', unsafe_allow_html=True)
-        price_cols = st.columns(2)
-        price_cols[0].metric("보정 예상가", format_price_uk(adjusted_price))
-        price_cols[1].metric("모델 예측가", format_price_uk(predicted_price))
-
-        metric_cols = st.columns(3)
-        metric_cols[0].metric("예상 평당가", f"{adjusted_pyeong_price:,.0f}만원/평")
-        metric_cols[1].metric("전용면적", f"{area:,.1f}㎡", f"{area / PYEONG_DIVISOR:,.1f}평")
-        metric_cols[2].metric("시간검증 MAE", f"{active_model.mae:,.0f}만원", f"MAPE {active_model.mape:.1%}")
-
-        if recent_median_price is None:
-            st.info(f"{active_model.name}을 사용했습니다. 최근 유사 거래가 5건 미만이라 모델 예측가를 그대로 표시합니다.")
-        else:
-            st.info(
-                f"{active_model.name}을 사용했습니다. 보정 예상가는 모델 예측가 {1 - recent_weight:.0%}와 최근 1년 유사거래 중위가 {recent_weight:.0%}를 섞은 값입니다."
-            )
+        st.markdown(
+            render_prediction_result_card(
+                adjusted_price=adjusted_price,
+                predicted_price=predicted_price,
+                recent_median_price=recent_median_price,
+                recent_weight=recent_weight,
+                adjusted_pyeong_price=adjusted_pyeong_price,
+                area=area,
+                floor=floor,
+                built_year=built_year,
+                contract_year=contract_year,
+                contract_month=contract_month,
+                gu=gu,
+                dong=dong,
+                complex_name=complex_name,
+                active_model=active_model,
+            ),
+            unsafe_allow_html=True,
+        )
 
     st.markdown('<div class="section-title">최근 1년 유사 거래</div>', unsafe_allow_html=True)
     summary_cols = st.columns(4)
@@ -1961,40 +2549,3 @@ with tab_predict:
         )
         st.caption("가격대별 시간검증 성능")
         st.markdown(render_soft_table(band_display, max_rows=20), unsafe_allow_html=True)
-
-with tab_table:
-    show_cols = [
-        "district",
-        "neighborhood",
-        "complex_name",
-        "area_m2",
-        "contract_date",
-        "price_10k_krw",
-        "price_per_pyeong",
-        "floor",
-        "built_year",
-        "building_age",
-        "deal_type",
-    ]
-    table = filtered[show_cols].rename(
-        columns={
-            "district": "구",
-            "neighborhood": "동",
-            "complex_name": "단지명",
-            "area_m2": "전용면적(㎡)",
-            "contract_date": "계약일",
-            "price_10k_krw": "거래금액(만원)",
-            "price_per_pyeong": "평당가(만원/평)",
-            "floor": "층",
-            "built_year": "건축년도",
-            "building_age": "연식",
-            "deal_type": "거래유형",
-        }
-    )
-    st.markdown(render_soft_table(table, max_rows=300), unsafe_allow_html=True)
-    st.download_button(
-        "필터링된 데이터 CSV 다운로드",
-        table.to_csv(index=False).encode("utf-8-sig"),
-        "daegu_apartment_trade_filtered.csv",
-        "text/csv",
-    )
